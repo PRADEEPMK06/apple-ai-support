@@ -1,36 +1,39 @@
-import os
+import sys
 import json
-import time
-import requests
+from pathlib import Path
 from dotenv import load_dotenv
+
+# Ensure root and src are on path
+project_root = Path(__file__).resolve().parent.parent
+if str(project_root) not in sys.path:
+    sys.path.append(str(project_root))
+
+load_dotenv()
+
+try:
+    from src.llm_client import get_llm_config, call_chat_completion, clean_json_response
+except ImportError:
+    from llm_client import get_llm_config, call_chat_completion, clean_json_response
 
 """
 judge.py
 
-This module implements the "LLM as Judge" pattern. It uses Grok to evaluate
+This module implements the "LLM as Judge" pattern. It uses the LLM to evaluate
 a generated reply on 5 criteria: Relevance, Helpfulness, Groundedness, 
 Safety, and Tone, each on a 1-5 scale.
 """
 
-load_dotenv()
-
 def evaluate_reply(customer_message: str, retrieved_cases: list, generated_reply: str) -> dict:
     """
-    Evaluates a generated reply using Grok LLM.
+    Evaluates a generated reply using the LLM.
     
     Returns:
         dict: Scores and explanation.
     """
-    api_key = os.getenv("GROK_API_KEY")
-    if not api_key:
-        print("[Error]       GROK_API_KEY not found.")
+    config = get_llm_config()
+    if not config["api_key"]:
+        print("[Error]       LLM API key not found.")
         return _fallback_scores()
-
-    url = "https://api.x.ai/v1/chat/completions"
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {api_key}"
-    }
 
     # Format the evidence
     evidence_text = ""
@@ -68,44 +71,28 @@ def evaluate_reply(customer_message: str, retrieved_cases: list, generated_reply
         f"Generated Reply: '{generated_reply}'\n"
     )
 
-    payload = {
-        "model": "grok-3-mini",
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_content}
-        ],
-        "temperature": 0.1,
-    }
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_content}
+    ]
 
-    max_retries = 3
-    for attempt in range(1, max_retries + 1):
-        try:
-            response = requests.post(url, headers=headers, json=payload, timeout=20)
-            response.raise_for_status()
-            
-            content = response.json()["choices"][0]["message"]["content"]
-            if content.startswith("```json"):
-                content = content[7:-3].strip()
-            elif content.startswith("```"):
-                content = content[3:-3].strip()
-                
-            parsed = json.loads(content)
-            
-            # Ensure keys exist and are valid numbers
-            for key in ["relevance", "helpfulness", "groundedness", "safety", "tone"]:
-                parsed[key] = int(parsed.get(key, 3))
-            
-            avg = sum([parsed[key] for key in ["relevance", "helpfulness", "groundedness", "safety", "tone"]]) / 5.0
-            parsed["overall"] = round(avg, 2)
-            parsed["explanation"] = parsed.get("explanation", "")
-            
-            return parsed
-            
-        except (requests.RequestException, json.JSONDecodeError, ValueError, KeyError) as e:
-            if attempt < max_retries:
-                time.sleep(2)
-            else:
-                return _fallback_scores()
+    try:
+        raw_content = call_chat_completion(messages, temperature=0.1, timeout=20, max_retries=3)
+        parsed = clean_json_response(raw_content)
+        
+        # Ensure keys exist and are valid numbers
+        for key in ["relevance", "helpfulness", "groundedness", "safety", "tone"]:
+            parsed[key] = int(parsed.get(key, 3))
+        
+        avg = sum([parsed[key] for key in ["relevance", "helpfulness", "groundedness", "safety", "tone"]]) / 5.0
+        parsed["overall"] = round(avg, 2)
+        parsed["explanation"] = parsed.get("explanation", "")
+        
+        return parsed
+        
+    except Exception as e:
+        print(f"[Judge]         Evaluation failed: {e}")
+        return _fallback_scores()
 
 def _fallback_scores():
     return {
@@ -113,3 +100,4 @@ def _fallback_scores():
         "safety": 0, "tone": 0, "overall": 0.0,
         "explanation": "LLM Judge failed."
     }
+

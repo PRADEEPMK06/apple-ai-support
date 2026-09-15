@@ -1,23 +1,23 @@
-import os
+import sys
 import json
-import time
-import requests
+from pathlib import Path
 from dotenv import load_dotenv
 
-"""
-reply_generator.py
-
-This module takes the customer message, its classified intent, and retrieved 
-historical cases from our semantic index. It uses Grok LLM to generate a reply
-that is strictly grounded in the historical evidence. It ensures no false promises
-are made and handles low-confidence scenarios safely.
-"""
+# Ensure root and src are on path
+project_root = Path(__file__).resolve().parent.parent
+if str(project_root) not in sys.path:
+    sys.path.append(str(project_root))
 
 load_dotenv()
 
+try:
+    from src.llm_client import get_llm_config, call_chat_completion, clean_json_response
+except ImportError:
+    from llm_client import get_llm_config, call_chat_completion, clean_json_response
+
 def generate_reply(customer_message: str, intent: str, retrieved_cases: list, low_confidence: bool) -> dict:
     """
-    Generates a grounded response using Grok LLM.
+    Generates a grounded response using the configured LLM.
     
     Args:
         customer_message (str): The user's query.
@@ -28,16 +28,10 @@ def generate_reply(customer_message: str, intent: str, retrieved_cases: list, lo
     Returns:
         dict: Containing 'reply', 'grounding_summary', and 'used_case_ids'.
     """
-    api_key = os.getenv("GROK_API_KEY")
-    if not api_key:
-        print("[Error]       GROK_API_KEY not found in environment.")
+    config = get_llm_config()
+    if not config["api_key"]:
+        print("[Error]       LLM API key not found in environment.")
         return _fallback_reply()
-
-    url = "https://api.x.ai/v1/chat/completions"
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {api_key}"
-    }
 
     used_ids = [str(case.get("conversation_id")) for case in retrieved_cases]
     
@@ -85,51 +79,32 @@ def generate_reply(customer_message: str, intent: str, retrieved_cases: list, lo
         f"{evidence_text}"
     )
 
-    payload = {
-        "model": "grok-3-mini",
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": f"Customer Message: '{customer_message}'"}
-        ],
-        "temperature": 0.2, # Keep hallucination risk low
-    }
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": f"Customer Message: '{customer_message}'"}
+    ]
 
-    print("[Generator]     Asking Grok to draft reply...")
+    print("[Generator]     Asking LLM to draft reply...")
     
-    max_retries = 3
-    for attempt in range(1, max_retries + 1):
-        try:
-            response = requests.post(url, headers=headers, json=payload, timeout=20)
-            response.raise_for_status()
+    try:
+        raw_content = call_chat_completion(messages, temperature=0.2, timeout=20, max_retries=3)
+        parsed = clean_json_response(raw_content)
+        
+        reply = parsed.get("reply", "")
+        summary = parsed.get("grounding_summary", "")
+        
+        if not reply:
+            raise ValueError("Generated reply is empty.")
             
-            data = response.json()
-            content = data["choices"][0]["message"]["content"]
-            
-            if content.startswith("```json"):
-                content = content[7:-3].strip()
-            elif content.startswith("```"):
-                content = content[3:-3].strip()
-                
-            parsed = json.loads(content)
-            reply = parsed.get("reply", "")
-            summary = parsed.get("grounding_summary", "")
-            
-            if not reply:
-                raise ValueError("Generated reply is empty.")
-                
-            return {
-                "reply": reply,
-                "grounding_summary": summary,
-                "used_case_ids": used_ids
-            }
-            
-        except (requests.RequestException, json.JSONDecodeError, ValueError, KeyError) as e:
-            print(f"[Generator]     Attempt {attempt} failed: {e}")
-            if attempt < max_retries:
-                time.sleep(2)
-            else:
-                print("[Generator]     All retries failed. Using generic fallback.")
-                return _fallback_reply(used_ids)
+        return {
+            "reply": reply,
+            "grounding_summary": summary,
+            "used_case_ids": used_ids
+        }
+        
+    except Exception as e:
+        print(f"[Generator]     Reply generation failed: {e}. Using generic fallback.")
+        return _fallback_reply(used_ids)
 
 def _fallback_reply(used_ids=None) -> dict:
     if used_ids is None:

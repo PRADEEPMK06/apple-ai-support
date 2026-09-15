@@ -18,6 +18,10 @@ the pipeline, and evaluates them with the LLM Judge. It also creates a blank
 human scoring template, or computes agreement metrics if human scores are present.
 """
 
+# Set UTF-8 encoding for standard output if supported
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+
 def main():
     eval_dir = project_root / "data" / "evaluation"
     golden_path = eval_dir / "golden_set.csv"

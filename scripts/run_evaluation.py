@@ -19,6 +19,10 @@ This script runs the keyword baseline, TF-IDF baseline, and full AI pipeline
 on the golden set. It calculates performance metrics and outputs a comparison table.
 """
 
+# Set UTF-8 encoding for standard output if supported
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+
 def main():
     golden_path = project_root / "data" / "evaluation" / "golden_set.csv"
     results_json_path = project_root / "data" / "evaluation" / "results.json"

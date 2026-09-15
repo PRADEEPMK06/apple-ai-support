@@ -1,19 +1,19 @@
-import os
+import sys
 import json
-import requests
-import time
+from pathlib import Path
 from dotenv import load_dotenv
 
-"""
-escalation.py
-
-This module determines whether a customer message can be safely handled by the AI (AUTO)
-or if it requires a human agent (ESCALATE). It applies a strict set of rules in order.
-If a message does not trigger any hardcoded rules, it falls back to the Grok LLM to
-make a borderline judgment.
-"""
+# Ensure root and src are on path
+project_root = Path(__file__).resolve().parent.parent
+if str(project_root) not in sys.path:
+    sys.path.append(str(project_root))
 
 load_dotenv()
+
+try:
+    from src.llm_client import get_llm_config, call_chat_completion, clean_json_response
+except ImportError:
+    from llm_client import get_llm_config, call_chat_completion, clean_json_response
 
 def determine_escalation(customer_message: str, intent: str, intent_confidence: float, retrieval_confidence: float) -> dict:
     """
@@ -74,24 +74,18 @@ def determine_escalation(customer_message: str, intent: str, intent_confidence: 
             return {"decision": "AUTO", "reason": f"Technical intent ({intent}) with high retrieval confidence ({retrieval_confidence:.2f} >= 0.5)."}
 
     # ---------------------------------------------------------
-    # RULE SET 3: BORDERLINE (Use Grok to decide)
+    # RULE SET 3: BORDERLINE (Use LLM to decide)
     # ---------------------------------------------------------
     
-    print("[Escalation]    Case is borderline. Consulting Grok LLM...")
+    print("[Escalation]    Case is borderline. Consulting LLM...")
     return _llm_escalation_decision(customer_message, intent)
 
 def _llm_escalation_decision(customer_message: str, intent: str) -> dict:
-    """Uses Grok to decide escalation for borderline cases."""
-    api_key = os.getenv("GROK_API_KEY")
-    if not api_key:
-        print("[Error]       GROK_API_KEY not found. Defaulting to ESCALATE for safety.")
+    """Uses LLM to decide escalation for borderline cases."""
+    config = get_llm_config()
+    if not config["api_key"]:
+        print("[Error]       LLM API key not found. Defaulting to ESCALATE for safety.")
         return {"decision": "ESCALATE", "reason": "API key missing for borderline evaluation."}
-
-    url = "https://api.x.ai/v1/chat/completions"
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {api_key}"
-    }
 
     system_prompt = (
         "You are an escalation manager for AppleSupport.\n"
@@ -106,46 +100,26 @@ def _llm_escalation_decision(customer_message: str, intent: str) -> dict:
         "}\n"
     )
 
-    payload = {
-        "model": "grok-3-mini",
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": f"Intent: {intent}\nCustomer Message: '{customer_message}'"}
-        ],
-        "temperature": 0.1,
-    }
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": f"Intent: {intent}\nCustomer Message: '{customer_message}'"}
+    ]
 
-    max_retries = 3
-    for attempt in range(1, max_retries + 1):
-        try:
-            response = requests.post(url, headers=headers, json=payload, timeout=15)
-            response.raise_for_status()
+    try:
+        raw_content = call_chat_completion(messages, temperature=0.1, timeout=15, max_retries=3)
+        parsed = clean_json_response(raw_content)
+        decision = parsed.get("decision", "ESCALATE")
+        reason = parsed.get("reason", "No reason provided by LLM")
+        
+        if decision not in ["AUTO", "ESCALATE"]:
+            decision = "ESCALATE"
+            reason = "LLM returned invalid decision, defaulting to ESCALATE."
             
-            data = response.json()
-            content = data["choices"][0]["message"]["content"]
-            
-            if content.startswith("```json"):
-                content = content[7:-3].strip()
-            elif content.startswith("```"):
-                content = content[3:-3].strip()
-                
-            parsed = json.loads(content)
-            decision = parsed.get("decision", "ESCALATE")
-            reason = parsed.get("reason", "No reason provided by LLM")
-            
-            if decision not in ["AUTO", "ESCALATE"]:
-                decision = "ESCALATE"
-                reason = "LLM returned invalid decision, defaulting to ESCALATE."
-                
-            return {"decision": decision, "reason": reason}
-            
-        except (requests.RequestException, json.JSONDecodeError, ValueError, KeyError) as e:
-            print(f"[Escalation]    Attempt {attempt} failed: {e}")
-            if attempt < max_retries:
-                time.sleep(2)
-            else:
-                print("[Escalation]    All retries failed. Defaulting to ESCALATE.")
-                return {"decision": "ESCALATE", "reason": "LLM failure, safe fallback applied."}
+        return {"decision": decision, "reason": reason}
+        
+    except Exception as e:
+        print(f"[Escalation]    LLM evaluation failed: {e}. Defaulting to ESCALATE.")
+        return {"decision": "ESCALATE", "reason": "LLM failure, safe fallback applied."}
 
 # Small test snippet if run directly
 if __name__ == "__main__":
