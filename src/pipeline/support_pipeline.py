@@ -2,7 +2,7 @@ import sys
 from pathlib import Path
 
 # Add the project root to sys.path so we can import from src
-project_root = Path(__file__).resolve().parent.parent
+project_root = Path(__file__).resolve().parent.parent.parent
 sys.path.append(str(project_root))
 
 from src.intent_classifier import classify_intent
@@ -11,19 +11,20 @@ from src.reply_generator import generate_reply
 from src.escalation import determine_escalation
 
 """
-pipeline.py
+support_pipeline.py
 
 This module orchestrates the complete end-to-end AI support agent. It connects
 intent classification, semantic retrieval, reply generation, and escalation 
 decision-making into a single pipeline.
 """
 
-def run_pipeline(customer_message: str) -> dict:
+def run_pipeline(customer_message: str, brand: str = "AppleSupport") -> dict:
     """
     Executes the full AI support agent pipeline.
     
     Args:
         customer_message (str): The raw tweet from the customer.
+        brand (str): The brand to retrieve historical cases for.
         
     Returns:
         dict: A comprehensive dictionary containing outputs from all pipeline stages.
@@ -34,7 +35,7 @@ def run_pipeline(customer_message: str) -> dict:
     intent_confidence = intent_result.get("confidence", 0.0)
     
     # Step 2: Retrieve Historical Cases
-    retriever = get_retriever()
+    retriever = get_retriever(brand)
     retrieved_cases, low_retrieval_confidence = retriever.get_similar_cases(customer_message)
     
     # Calculate retrieval confidence (highest similarity score)

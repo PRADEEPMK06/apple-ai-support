@@ -14,13 +14,19 @@ is low based on a similarity threshold of 0.3.
 """
 
 class SupportRetriever:
-    def __init__(self):
+    def __init__(self, brand: str = "AppleSupport"):
         project_root = Path(__file__).resolve().parent.parent
         processed_dir = project_root / "data" / "processed"
         
-        embeddings_path = processed_dir / "embeddings.npy"
-        corpus_path = processed_dir / "corpus.csv"
+        # Load the brand-specific embeddings and corpus
+        embeddings_path = processed_dir / f"{brand}_embeddings.npy"
+        corpus_path = processed_dir / f"{brand}_conversations.csv"
         
+        # Fallback to general names if brand-specific ones don't exist (for backward compatibility)
+        if not embeddings_path.exists():
+            embeddings_path = processed_dir / "embeddings.npy"
+            corpus_path = processed_dir / "corpus.csv"
+            
         # Delay loading until needed or load on init
         self.embeddings = np.load(embeddings_path)
         self.corpus_df = pd.read_csv(corpus_path)
@@ -65,11 +71,11 @@ class SupportRetriever:
         
         return retrieved_cases, low_confidence
 
-# Singleton-like instantiation to avoid reloading the model and embeddings multiple times
-_retriever_instance = None
+# Singleton-like dictionary to avoid reloading models for different brands
+_retriever_instances = {}
 
-def get_retriever():
-    global _retriever_instance
-    if _retriever_instance is None:
-        _retriever_instance = SupportRetriever()
-    return _retriever_instance
+def get_retriever(brand: str = "AppleSupport"):
+    global _retriever_instances
+    if brand not in _retriever_instances:
+        _retriever_instances[brand] = SupportRetriever(brand)
+    return _retriever_instances[brand]
